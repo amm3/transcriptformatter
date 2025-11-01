@@ -1,0 +1,8 @@
+# Ignore all .conf files (they may contain secrets)
+*.conf
+
+# But keep .conf.example files in version control
+!*.conf.example
+
+# Mac Special Files
+.DS_Store

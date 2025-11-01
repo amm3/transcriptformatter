@@ -36,9 +36,9 @@ A Python tool that uses OpenAI's API to reformat machine-transcribed audio/video
    ```ini
    [openai]
    api_key = sk-your-actual-api-key-here
-   model = gpt-4o
+   model = gpt-4.1
    max_tokens = 16000
-   temperature = 0.3
+   temperature = 0.1
    max_continuations = 10
    ```
 

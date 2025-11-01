@@ -4,7 +4,7 @@ api_key = sk-your-api-key-here
 
 # Model to use (default: gpt-4o)
 # Options: gpt-4o, gpt-4o-mini, o1-preview, o1-mini, gpt-4-turbo, etc.
-model = gpt-4o
+model = gpt-4.1
 
 # Maximum tokens per response (default: 16000)
 # Increase for longer responses, decrease to save costs
@@ -13,7 +13,7 @@ max_tokens = 16000
 # Temperature for response generation (default: 0.3)
 # Lower = more deterministic, Higher = more creative
 # Range: 0.0 to 2.0
-temperature = 0.3
+temperature = 0.1
 
 # Maximum number of continuation requests (default: 10)
 # Prevents infinite loops if the model keeps getting cut off

@@ -99,6 +99,8 @@ def main():
                         help="Save output even if sanity check fails (for inspection)")
     parser.add_argument("--timestamps", action="store_true", default=False,
                         help="Include timestamps in output (when speakers change)")
+    parser.add_argument("--disable-timestamp-adjustment", action="store_true", default=False,
+                        help="Disable automatic 1-hour subtraction for DaVinci Resolve timestamps")
     parser.add_argument("-v", action="store_true", default=False, help="Print extra info")
     parser.add_argument("-vv", action="store_true", default=False, help="Print (more) extra info")
     args = parser.parse_args()
@@ -128,7 +130,7 @@ def main():
             continue
         
         log_info(f"Processing file: {file_path}")
-        process_transcript(file_path, args.output, config, args.skip_sanity_check, args.save_failed, args.timestamps)
+        process_transcript(file_path, args.output, config, args.skip_sanity_check, args.save_failed, args.timestamps, args.disable_timestamp_adjustment)
     
     return 0
 
@@ -178,7 +180,7 @@ def load_config(config_path=None):
     return config
 
 
-def process_transcript(input_file, output_file, config, skip_sanity_check=False, save_failed=False, include_timestamps=False):
+def process_transcript(input_file, output_file, config, skip_sanity_check=False, save_failed=False, include_timestamps=False, disable_timestamp_adjustment=False):
     """Process a transcript file with automatic continuation and optional speaker awareness"""
     
     write_status(f"Starting to process: {input_file}")
@@ -205,6 +207,26 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
         # Group consecutive segments by same speaker
         grouped_segments = group_segments_by_speaker(segments)
         log_info(f"Grouped into {len(grouped_segments)} speaker chunks")
+        
+        # Detect and adjust DaVinci Resolve timestamps if needed
+        if not disable_timestamp_adjustment and detect_davinci_timeline(grouped_segments):
+            log_info("Detected DaVinci Resolve timeline (starts at 01:00:00:xx)")
+            log_info("Automatically subtracting 1 hour from all timestamps")
+            write_status("Adjusting timestamps (-1 hour for DaVinci timeline)")
+            
+            # Adjust all timestamps in grouped segments
+            for seg in grouped_segments:
+                if seg.start_timestamp:
+                    seg.start_timestamp = adjust_timestamp(seg.start_timestamp)
+                
+                # Adjust timestamps in timestamped_lines
+                if seg.timestamped_lines:
+                    seg.timestamped_lines = [
+                        (adjust_timestamp(ts), text) 
+                        for ts, text in seg.timestamped_lines
+                    ]
+        elif disable_timestamp_adjustment:
+            log_debug("Timestamp adjustment disabled by --disable-timestamp-adjustment flag")
         
         for i, seg in enumerate(grouped_segments):
             speaker_name = seg.speaker if seg.speaker else "(Unknown)"
@@ -522,6 +544,92 @@ def format_timestamp(timestamp: Optional[str]) -> Optional[str]:
     else:
         # Unknown format, return as is in brackets
         return f"[{timestamp}]"
+
+
+def detect_davinci_timeline(segments: List['SpeakerSegment']) -> bool:
+    """
+    Detect if timestamps appear to be from a DaVinci Resolve timeline starting at 01:00:00:00.
+    
+    DaVinci Resolve starts timelines at 01:00:00:00 (1 hour), so we check if the earliest
+    timestamp is close to this value (within first 5 minutes after 01:00:00:00).
+    
+    Args:
+        segments: List of parsed transcript segments with timestamps
+    
+    Returns:
+        True if this appears to be a DaVinci timeline that needs adjustment
+    """
+    # Find earliest timestamp
+    earliest = None
+    for seg in segments:
+        if seg.start_timestamp:
+            if earliest is None:
+                earliest = seg.start_timestamp
+            else:
+                # Simple string comparison works for HH:MM:SS:FF format
+                if seg.start_timestamp < earliest:
+                    earliest = seg.start_timestamp
+    
+    if not earliest:
+        return False
+    
+    # Parse the earliest timestamp
+    parts = earliest.split(':')
+    if len(parts) < 3:
+        return False
+    
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2])
+        
+        # Check if timestamp is in the range 01:00:00:xx to 01:04:59:xx
+        # (first 5 minutes after 1 hour mark, strictly less than 5 minutes)
+        if hours == 1 and (minutes < 5 or (minutes == 5 and seconds == 0)):
+            log_debug(f"Detected DaVinci timeline: earliest timestamp is {earliest}")
+            return True
+        
+        return False
+    except (ValueError, IndexError):
+        return False
+
+
+def adjust_timestamp(timestamp: str, subtract_hours: int = 1) -> str:
+    """
+    Adjust a timestamp by subtracting hours.
+    
+    Args:
+        timestamp: Timestamp string like "01:23:45:12"
+        subtract_hours: Number of hours to subtract (default: 1)
+    
+    Returns:
+        Adjusted timestamp string
+    """
+    if not timestamp:
+        return timestamp
+    
+    parts = timestamp.split(':')
+    if len(parts) < 3:
+        return timestamp
+    
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2])
+        frames = parts[3] if len(parts) > 3 else None
+        
+        # Subtract hours
+        hours = max(0, hours - subtract_hours)
+        
+        # Rebuild timestamp
+        if frames:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames}"
+        else:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    
+    except (ValueError, IndexError):
+        # If parsing fails, return original
+        return timestamp
 
 
 def is_plural_variant(word1: str, word2: str) -> bool:

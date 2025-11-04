@@ -217,10 +217,13 @@ STATUS_REPORT_TIME_INTERVAL = 30   # Report every N seconds
 
 **Input** (`interview.txt`):
 ```
-um so yeah i was thinking that we could you know maybe start with
-the introduction and then uh move on to the main points and
-basically what i wanted to say was that the project has been
-going really well
+so uh the first thing i want to mention is that we've been working on
+this for about six months now and the results have been pretty amazing
+we started with just a basic prototype but then you know we realized
+that we needed to expand the scope significantly now the interesting
+part is how we approached the integration with the existing systems
+that was probably the biggest challenge we faced because nothing was
+documented properly and we had to reverse engineer most of it
 ```
 
 **Command**:
@@ -230,23 +233,27 @@ going really well
 
 **Output** (`interview_reformatted.txt`):
 ```
-Um, so yeah, I was thinking that we could, you know, maybe start with the introduction and then move on to the main points. And basically what I wanted to say was that the project has been going really well.
+So the first thing I want to mention is that we've been working on this for about six months now, and the results have been pretty amazing. We started with just a basic prototype, but then, you know, we realized that we needed to expand the scope significantly.
+
+Now the interesting part is how we approached the integration with the existing systems. That was probably the biggest challenge we faced because nothing was documented properly and we had to reverse engineer most of it.
 ```
 
 ### Example 2: Speaker-Based Transcript with Timestamps
 
 **Input** (`panel.txt`):
 ```
-[01:00:05:10 - 01:00:15:20]
-Alex
- So I think the key issue here is really about understanding the fundamentals
+[01:00:08:15 - 01:00:22:10]
+Jordan
+ The challenge we're facing in the renewable energy sector is really about
+ scaling up production while maintaining cost efficiency
 
-[01:00:16:00 - 01:00:18:15]
- (Audience Applause)
+[01:00:23:00 - 01:00:25:05]
+ (Audience Laughter)
 
-[01:00:19:00 - 01:00:35:10]
-Alex
- and building on that foundation we can move forward with confidence
+[01:00:26:00 - 01:00:42:18]
+Jordan
+ but I think we're getting there and the innovations we're seeing in battery
+ technology are going to be the game changer we've been waiting for
 ```
 
 **Command**:
@@ -256,61 +263,62 @@ Alex
 
 **Output** (`panel_reformatted.txt`):
 ```
-[00:00:05] **Alex:**
+[00:00:08] **Jordan:**
 
-[00:00:05] So I think the key issue here is really about understanding the fundamentals (Audience Applause) and building on that foundation we can move forward with confidence.
+[00:00:08] The challenge we're facing in the renewable energy sector is really about scaling up production while maintaining cost efficiency (Audience Laughter), but I think we're getting there, and the innovations we're seeing in battery technology are going to be the game changer we've been waiting for.
 ```
 
 Note:
-- DaVinci timestamp automatically adjusted (01:00:05 → 00:00:05)
-- Audience reaction merged into Alex's text
+- DaVinci timestamp automatically adjusted (01:00:08 → 00:00:08)
+- Audience reaction merged into Jordan's text
 - Timestamp appears at speaker change but not duplicated on first paragraph
 
 ### Example 3: Long Transcript with Progress Updates
 
 **Command**:
 ```bash
-./transcript_reformatter.py long_sermon.txt --timestamps -v
+./transcript_reformatter.py keynote_speech.txt --timestamps -v
 ```
 
 **Output** (to STDERR - progress updates):
 ```
-STATUS: Starting to process: long_sermon.txt
+STATUS: Starting to process: keynote_speech.txt
 STATUS: Adjusting timestamps (-1 hour for DaVinci timeline)
-STATUS: Processing chunk 1 of 47...
-STATUS: Processing chunk 5 of 47...
-STATUS: Processing chunk 10 of 47...
-STATUS: Completed processing all 47 chunks
+STATUS: Processing chunk 1 of 52...
+STATUS: Processing chunk 5 of 52...
+STATUS: Processing chunk 10 of 52...
+STATUS: Completed processing all 52 chunks
 STATUS: Saving reformatted transcript...
-STATUS: ✓ Saved: long_sermon_reformatted.txt
+STATUS: ✓ Saved: keynote_speech_reformatted.txt
 ```
 
 **Output** (to STDOUT - logs with `-v`):
 ```
-2025-10-29 14:32:10:INFO:Loading configuration from: transcript_reformatter.conf
-2025-10-29 14:32:10:INFO:Transcript length: 45000 characters
-2025-10-29 14:32:10:INFO:Detected DaVinci Resolve timeline (starts at 01:00:00:xx)
-2025-10-29 14:32:10:INFO:Automatically subtracting 1 hour from all timestamps
-2025-10-29 14:32:15:INFO:Processing chunk 1/47: Pastor
-2025-10-29 14:32:20:WARNING:  ⚠ Chunk 12: 1 word difference, within tolerance
-2025-10-29 14:32:25:OUTPUT:⚠ WARNING: 3 chunk(s) had word count differences
-2025-10-29 14:32:25:OUTPUT:  Chunks with issues: 12, 23, 35
-2025-10-29 14:32:25:OUTPUT:  See error log for details
-2025-10-29 14:32:25:OUTPUT:Reformatted transcript saved to: long_sermon_reformatted.txt
-2025-10-29 14:32:25:OUTPUT:Error log saved to: long_sermon_reformatted.errors.txt
+2025-11-03 09:15:22:INFO:Loading configuration from: transcript_reformatter.conf
+2025-11-03 09:15:22:INFO:Transcript length: 48500 characters
+2025-11-03 09:15:22:INFO:Detected DaVinci Resolve timeline (starts at 01:00:00:xx)
+2025-11-03 09:15:22:INFO:Automatically subtracting 1 hour from all timestamps
+2025-11-03 09:15:28:INFO:Processing chunk 1/52: Dr. Martinez
+2025-11-03 09:15:35:WARNING:  ⚠ Chunk 15: 1 word difference, within tolerance
+2025-11-03 09:15:42:OUTPUT:⚠ WARNING: 4 chunk(s) had word count differences
+2025-11-03 09:15:42:OUTPUT:  Chunks with issues: 15, 28, 39, 47
+2025-11-03 09:15:42:OUTPUT:  See error log for details
+2025-11-03 09:15:42:OUTPUT:Reformatted transcript saved to: keynote_speech_reformatted.txt
+2025-11-03 09:15:42:OUTPUT:Error log saved to: keynote_speech_reformatted.errors.txt
 ```
 
 ### Example 4: Fuzzy Matching Success
 
-**Original chunk**: "The parent knows their child well"
-**Reformed chunk**: "The parents know there children well"
+**Original chunk**: "The researcher studied there findings carefully"
+**Reformed chunk**: "The researchers study their finding carefully"
 
 **Result**:
 ```
 ✓ Accepted with fuzzy matching:
-  - parent → parents (plural)
-  - knows → know (plural)
-  - their → there (sound-alike)
+  - researcher → researchers (plural)
+  - studied → study (tense variation)
+  - there → their (sound-alike)
+  - findings → finding (plural)
 ```
 
 Sanity check passes because all variations are acceptable!
@@ -338,13 +346,13 @@ When `--timestamps` is enabled:
 
 **Example**:
 ```
-[00:05:30] **Speaker:**
+[00:03:45] **Dr. Chen:**
 
-[00:05:30] First paragraph about topic A...
+[00:03:45] First paragraph discussing quantum computing fundamentals...
 
-[00:08:15] Second paragraph transitioning to topic B...
+[00:06:20] Second paragraph transitioning to practical applications...
 
-[00:12:40] Final thoughts on this topic.
+[00:09:55] Final thoughts on future developments.
 ```
 
 ## Sanity Check System
@@ -374,17 +382,17 @@ Automatically accepts:
 
 If issues are found, creates `<output>.errors.txt`:
 ```
-CHUNK 12: Ashley
+CHUNK 18: Dr. Williams
 --------------------------------------------------------------------------------
 Rule Applied: Word delta ≤ 1
-Original word count: 45
-Reformatted word count: 44
+Original word count: 52
+Reformatted word count: 51
 Delta: 1
 Action: Using REFORMATTED (acceptable)
 
 Details:
 1 word(s) differ
-  Position 23: 'um' vs 'removed'
+  Position 31: 'uh' vs 'removed'
 ```
 
 ## Progress Status Updates

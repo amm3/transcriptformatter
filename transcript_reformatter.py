@@ -360,12 +360,18 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
         # Store segment (original or reformatted based on decision)
         final_text = segment.text if use_original else reformatted_text
         
+        # Find paragraph timestamps if we have timestamped lines
+        paragraph_timestamps = []
+        if segment.timestamped_lines and include_timestamps:
+            paragraph_timestamps = find_paragraph_timestamps(final_text, segment.timestamped_lines)
+        
         reformatted_segments.append({
             'speaker': segment.speaker,
             'timestamp': segment.start_timestamp,
             'text': final_text,
             'original_text': segment.text,
-            'was_modified': not use_original
+            'was_modified': not use_original,
+            'paragraph_timestamps': paragraph_timestamps  # List of (timestamp, paragraph_text)
         })
     
     # Summary
@@ -385,6 +391,7 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
     if has_speakers:
         output_parts = []
         for seg in reformatted_segments:
+            # Add speaker header
             if seg['speaker']:
                 # Format speaker line with optional timestamp
                 if include_timestamps and seg['timestamp']:
@@ -392,8 +399,28 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
                     output_parts.append(f"{formatted_ts} **{seg['speaker']}:**")
                 else:
                     output_parts.append(f"{seg['speaker']}:")
-            output_parts.append(seg['text'])
-            output_parts.append('')  # Blank line between speakers
+            
+            # Add text with paragraph-level timestamps if available
+            if include_timestamps and seg.get('paragraph_timestamps'):
+                # Use paragraph timestamps
+                for idx, (para_ts, para_text) in enumerate(seg['paragraph_timestamps']):
+                    # Skip timestamp on first paragraph if it matches the speaker timestamp
+                    # (to avoid duplicate timestamps when speaker changes)
+                    if idx == 0 and seg['speaker'] and para_ts == seg['timestamp']:
+                        # First paragraph, speaker header already has timestamp
+                        output_parts.append(para_text)
+                    else:
+                        # Subsequent paragraphs or different timestamp - include timestamp
+                        if para_ts:
+                            formatted_ts = format_timestamp(para_ts)
+                            output_parts.append(f"{formatted_ts} {para_text}")
+                        else:
+                            output_parts.append(para_text)
+                    output_parts.append('')  # Blank line after each paragraph
+            else:
+                # No paragraph timestamps, just add text as-is
+                output_parts.append(seg['text'])
+                output_parts.append('')  # Blank line between speakers
         
         final_output = '\n'.join(output_parts).strip()
     else:
@@ -592,13 +619,15 @@ def normalize_text(text):
 
 class SpeakerSegment:
     """Represents a segment of text from a single speaker"""
-    def __init__(self, speaker: Optional[str], text: str, start_timestamp: Optional[str] = None):
+    def __init__(self, speaker: Optional[str], text: str, start_timestamp: Optional[str] = None, timestamped_lines: Optional[List[Tuple[str, str]]] = None):
         self.speaker = speaker
         self.text = text
         self.start_timestamp = start_timestamp
+        # List of (timestamp, text) tuples for fine-grained timestamp tracking
+        self.timestamped_lines = timestamped_lines or []
     
     def __repr__(self):
-        return f"SpeakerSegment(speaker={self.speaker}, timestamp={self.start_timestamp}, text_len={len(self.text)})"
+        return f"SpeakerSegment(speaker={self.speaker}, timestamp={self.start_timestamp}, text_len={len(self.text)}, lines={len(self.timestamped_lines)})"
 
 
 def parse_transcript_with_speakers(text: str) -> Tuple[List[SpeakerSegment], bool]:
@@ -647,6 +676,7 @@ def parse_transcript_with_speakers(text: str) -> Tuple[List[SpeakerSegment], boo
                 
                 # Collect text lines until next timestamp or end
                 text_lines = []
+                timestamped_lines = [(start_time, '')]  # Will accumulate text for this timestamp
                 j = text_start_idx
                 while j < len(lines):
                     if re.match(timestamp_pattern, lines[j].strip()):
@@ -657,8 +687,12 @@ def parse_transcript_with_speakers(text: str) -> Tuple[List[SpeakerSegment], boo
                 # Join text and clean up
                 text = '\n'.join(text_lines).strip()
                 
+                # Store the text with its timestamp
+                if text:
+                    timestamped_lines[0] = (start_time, text)
+                
                 if text:  # Only add if there's actual text
-                    segments.append(SpeakerSegment(speaker, text, start_time))
+                    segments.append(SpeakerSegment(speaker, text, start_time, timestamped_lines))
                 
                 i = j  # Move to next timestamp
             else:
@@ -723,6 +757,7 @@ def group_segments_by_speaker(segments: List[SpeakerSegment]) -> List[SpeakerSeg
         current_speaker = segments[i].speaker
         current_texts = [segments[i].text]
         current_start = segments[i].start_timestamp
+        current_timestamped_lines = list(segments[i].timestamped_lines)  # Copy the list
         
         j = i + 1
         
@@ -731,10 +766,12 @@ def group_segments_by_speaker(segments: List[SpeakerSegment]) -> List[SpeakerSeg
             if segments[j].speaker == current_speaker:
                 # Same speaker, add to group
                 current_texts.append(segments[j].text)
+                current_timestamped_lines.extend(segments[j].timestamped_lines)
                 j += 1
             elif merge_flags[j]:
                 # Parenthetical to merge, add to current group
                 current_texts.append(segments[j].text)
+                current_timestamped_lines.extend(segments[j].timestamped_lines)
                 j += 1
             else:
                 # Different speaker and not mergeable
@@ -742,11 +779,71 @@ def group_segments_by_speaker(segments: List[SpeakerSegment]) -> List[SpeakerSeg
         
         # Create grouped segment
         combined_text = ' '.join(current_texts)
-        grouped.append(SpeakerSegment(current_speaker, combined_text, current_start))
+        grouped.append(SpeakerSegment(current_speaker, combined_text, current_start, current_timestamped_lines))
         
         i = j
     
     return grouped
+
+
+def find_paragraph_timestamps(reformatted_text: str, timestamped_lines: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """
+    Match paragraphs in reformatted text back to original timestamped lines.
+    
+    Args:
+        reformatted_text: Text after LLM processing, with paragraph breaks
+        timestamped_lines: List of (timestamp, original_text) tuples
+    
+    Returns:
+        List of (timestamp, paragraph_text) tuples
+    """
+    # Split reformatted text into paragraphs
+    paragraphs = [p.strip() for p in reformatted_text.split('\n\n') if p.strip()]
+    
+    if not paragraphs or not timestamped_lines:
+        return [(None, reformatted_text)]
+    
+    # Build a search index of original text with timestamps
+    # Normalize for matching: remove punctuation, lowercase, split into words
+    original_words_map = []  # List of (timestamp, word_index, word)
+    
+    for timestamp, original_text in timestamped_lines:
+        words = normalize_text(original_text)
+        for idx, word in enumerate(words):
+            original_words_map.append((timestamp, word))
+    
+    result = []
+    
+    for paragraph in paragraphs:
+        # Get first few significant words from paragraph to match
+        para_words = normalize_text(paragraph)
+        if not para_words:
+            result.append((None, paragraph))
+            continue
+        
+        # Try to find where this paragraph starts in original text
+        # Look for first 3-5 words as a sequence
+        search_words = para_words[:min(5, len(para_words))]
+        
+        best_timestamp = None
+        
+        # Search for matching sequence in original
+        for i in range(len(original_words_map) - len(search_words) + 1):
+            # Check if we have a match
+            match = True
+            for j, search_word in enumerate(search_words):
+                if original_words_map[i + j][1] != search_word:
+                    match = False
+                    break
+            
+            if match:
+                # Found a match! Use the timestamp from first matched word
+                best_timestamp = original_words_map[i][0]
+                break
+        
+        result.append((best_timestamp, paragraph))
+    
+    return result
 
 
 def normalize_text(text):

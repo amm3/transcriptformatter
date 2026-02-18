@@ -101,6 +101,8 @@ def main():
                         help="Include timestamps in output (when speakers change)")
     parser.add_argument("--disable-timestamp-adjustment", action="store_true", default=False,
                         help="Disable automatic 1-hour subtraction for DaVinci Resolve timestamps")
+    parser.add_argument("-f", "--force", action="store_true", default=False,
+                        help="Overwrite output file if it already exists")
     parser.add_argument("-v", action="store_true", default=False, help="Print extra info")
     parser.add_argument("-vv", action="store_true", default=False, help="Print (more) extra info")
     args = parser.parse_args()
@@ -130,7 +132,7 @@ def main():
             continue
         
         log_info(f"Processing file: {file_path}")
-        process_transcript(file_path, args.output, config, args.skip_sanity_check, args.save_failed, args.timestamps, args.disable_timestamp_adjustment)
+        process_transcript(file_path, args.output, config, args.skip_sanity_check, args.save_failed, args.timestamps, args.disable_timestamp_adjustment, args.force)
     
     return 0
 
@@ -180,7 +182,7 @@ def load_config(config_path=None):
     return config
 
 
-def process_transcript(input_file, output_file, config, skip_sanity_check=False, save_failed=False, include_timestamps=False, disable_timestamp_adjustment=False):
+def process_transcript(input_file, output_file, config, skip_sanity_check=False, save_failed=False, include_timestamps=False, disable_timestamp_adjustment=False, force=False):
     """Process a transcript file with automatic continuation and optional speaker awareness"""
     
     write_status(f"Starting to process: {input_file}")
@@ -455,6 +457,11 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
         output_file = f"{base}_reformatted{ext}"
     
     # Write output
+    if os.path.exists(output_file) and not force:
+        log_error(f"Output file already exists: {output_file}")
+        log_error("Use -f/--force to overwrite")
+        return
+
     write_status(f"Saving reformatted transcript...")
     try:
         with open(output_file, 'w', encoding='utf-8') as f:

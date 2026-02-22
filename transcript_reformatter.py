@@ -198,9 +198,19 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
     if not transcript_text.strip():
         log_warning(f"File is empty: {input_file}")
         return
-    
+
+    # Determine output file path and check if it already exists before doing any processing
+    if not output_file:
+        base, ext = os.path.splitext(input_file)
+        output_file = f"{base}_reformatted{ext}"
+
+    if os.path.exists(output_file) and not force:
+        log_error(f"Output file already exists: {output_file}")
+        log_error("Use -f/--force to overwrite")
+        return
+
     log_info(f"Transcript length: {len(transcript_text)} characters")
-    
+
     # Parse transcript to detect speakers
     segments, has_speakers = parse_transcript_with_speakers(transcript_text)
     
@@ -451,17 +461,6 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
         # No speakers, just concatenate (timestamps not applicable without speakers)
         final_output = '\n\n'.join(seg['text'] for seg in reformatted_segments)
     
-    # Determine output file path
-    if not output_file:
-        base, ext = os.path.splitext(input_file)
-        output_file = f"{base}_reformatted{ext}"
-    
-    # Write output
-    if os.path.exists(output_file) and not force:
-        log_error(f"Output file already exists: {output_file}")
-        log_error("Use -f/--force to overwrite")
-        return
-
     write_status(f"Saving reformatted transcript...")
     try:
         with open(output_file, 'w', encoding='utf-8') as f:

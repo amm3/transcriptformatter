@@ -193,11 +193,11 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
             transcript_text = f.read()
     except Exception as e:
         log_error(f"Error reading file {input_file}: {e}")
-        return
+        return False
     
     if not transcript_text.strip():
         log_warning(f"File is empty: {input_file}")
-        return
+        return False
 
     # Determine output file path and check if it already exists before doing any processing
     if not output_file:
@@ -207,7 +207,7 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
     if os.path.exists(output_file) and not force:
         log_error(f"Output file already exists: {output_file}")
         log_error("Use -f/--force to overwrite")
-        return
+        return False
 
     log_info(f"Transcript length: {len(transcript_text)} characters")
 
@@ -470,7 +470,7 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
         log_info(f"Output length: {len(final_output)} characters")
     except Exception as e:
         log_error(f"Error writing output file: {e}")
-        return
+        return False
     
     # Write error log if there were issues
     if error_log and not skip_sanity_check:
@@ -521,6 +521,8 @@ def process_transcript(input_file, output_file, config, skip_sanity_check=False,
             
         except Exception as e:
             log_error(f"Error writing error log: {e}")
+
+    return True
 
 
 def format_timestamp(timestamp: Optional[str]) -> Optional[str]:
@@ -717,18 +719,6 @@ def fuzzy_word_match(word1: str, word2: str) -> bool:
         return True
     
     return False
-
-
-def normalize_text(text):
-    """
-    Normalize text by removing punctuation, converting to lowercase,
-    and splitting into words (ignoring all whitespace).
-    """
-    # Remove all punctuation and convert to lowercase
-    text = re.sub(r'[^\w\s]', '', text.lower())
-    # Split into words, which automatically handles all whitespace
-    words = text.split()
-    return words
 
 
 class SpeakerSegment:

@@ -17,6 +17,44 @@ A Python tool that uses OpenAI's API to reformat machine-transcribed audio/video
 - **Multiple File Processing**: Process multiple transcripts in one command
 - **Verbose Logging**: Optional debug output for troubleshooting
 
+## Full Pipeline: `podcast_transcribe.py`
+
+One command from podcast audio to the final transcript:
+
+```bash
+./podcast_transcribe.py "/Volumes/media/Podcasts/<show_name>/<episode_file>.mp3"
+```
+
+It runs these steps:
+
+1. **Transcribe** the audio in DaVinci Resolve using [`resolve_transcribe.py`](https://github.com/amm3/resolve_transcribe). If the clip is already in the Resolve project and transcribed, it reuses that transcription.
+2. **Identify unlabeled speakers** (segments labeled `Speaker 1517` or with no speaker) using `speaker_id.py`. It sends the show name, the episode title and excerpts to OpenAI, with web search enabled.
+3. **Confirm** each suggested name: accept, edit or skip it. With `--yes`, it accepts suggestions at or above `--min-confidence` without asking.
+4. **Write the names back to Resolve** with `MediaPoolItem.SetTranscription()` (Resolve Studio 21.1.2+). Resolve enrolls new names in the project. The original transcription is saved as JSON in the work dir first.
+5. **Export** the Resolve-format transcript to the work dir (default `~/Downloads/tmp/s`).
+6. **Reformat** it with `transcript_reformatter.py`. The output goes next to the audio file with a `.txt` extension, or to the path given with `-o`.
+
+If the output file already exists, the pipeline stops before touching Resolve or the API unless you pass `-f`.
+
+Useful options:
+
+```bash
+./podcast_transcribe.py --yes episode.mp3              # no prompts
+./podcast_transcribe.py --no-apply episode.mp3         # rename in the output only, not in Resolve
+./podcast_transcribe.py --skip-speaker-id episode.mp3  # old behaviour, without AI speaker ID
+./podcast_transcribe.py --timestamps -o out.txt episode.mp3
+```
+
+The pipeline reads the same `transcript_reformatter.conf`, plus an optional `[pipeline]` section. See `transcript_reformatter.conf.example` for `resolve_transcribe_dir`, `work_dir`, `speaker_id_model` and `min_confidence`.
+
+Each piece still runs on its own:
+
+- `resolve_transcribe.py`: transcribe and export. Its `--rename-speaker 'Speaker 1517=Jane Doe'` option renames speakers in Resolve before exporting.
+- `speaker_id.py transcript.txt`: print speaker suggestions for a Resolve-format transcript.
+- `transcript_reformatter.py`: reformat only, as described below.
+
+**Note on voice learning:** names written through the API are enrolled in the Resolve project. It has not yet been confirmed that this teaches Resolve the speaker's voice the way renaming in the Resolve UI does. If later episodes don't recognize the speaker, rename them once in the UI.
+
 ## Installation
 
 1. **Install Python 3.7+** (if not already installed)

@@ -18,3 +18,20 @@ temperature = 0.1
 # Maximum number of continuation requests (default: 10)
 # Prevents infinite loops if the model keeps getting cut off
 max_continuations = 10
+
+[pipeline]
+# Settings for podcast_transcribe.py (the full pipeline). All optional.
+# The [openai] api_key above is also used for speaker identification.
+
+# Where resolve_transcribe.py lives (default: ~/dev/resolve_transcribe)
+resolve_transcribe_dir = ~/dev/resolve_transcribe
+
+# Where the intermediate Resolve-format transcript is written (default: ~/Downloads/tmp/s)
+work_dir = ~/Downloads/tmp/s
+
+# Model used to identify unlabeled speakers; must support web search in the
+# OpenAI Responses API (default: speaker_id.DEFAULT_MODEL)
+# speaker_id_model =
+
+# Confidence (0-1) needed to auto-accept a suggested name with --yes (default: 0.8)
+min_confidence = 0.8

@@ -129,6 +129,7 @@ def main():
     ######################################
     mapping = {}
     still_unlabeled = []
+    resolve_write_failed = False
     if not args.skip_speaker_id:
         mapping, still_unlabeled = identify_and_confirm(
             transcription, audio_file, openai_config, pipeline, rt,
@@ -144,9 +145,15 @@ def main():
             backup = os.path.join(work_dir, f"{base_name}.transcription-backup.json")
             changed, error = rt.relabel_speakers(item, mapping, backup_file=backup)
             if error:
-                log_fatal(f"Failed to write speaker names to Resolve: {error}")
-            write_out(f"Renamed {changed} segments in Resolve (original saved to {backup})")
-            transcription = rt.get_transcription(item)
+                # Keep the confirmed names: apply them to the export instead
+                resolve_write_failed = True
+                log_warning(f"Failed to write speaker names to Resolve: {error}")
+                log_warning("Applying the names to the exported transcript only; rename them in the "
+                            "Resolve UI if you want Resolve to learn these voices")
+                transcription = apply_mapping(transcription, mapping)
+            else:
+                write_out(f"Renamed {changed} segments in Resolve (original saved to {backup})")
+                transcription = rt.get_transcription(item)
 
     ######################################
     # 4. Export the Resolve-format transcript
@@ -175,6 +182,8 @@ def main():
     ######################################
     write_out("")
     write_out(f"Done: {output_file}")
+    if resolve_write_failed:
+        write_out("  Names applied to the transcript only (Resolve write failed)")
     for old, new in mapping.items():
         write_out(f"  {old or '(no speaker)'} -> {new}")
     if still_unlabeled:

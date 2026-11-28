@@ -5,8 +5,18 @@ Podcast transcription pipeline: audio file -> final reformatted transcript.
   1. Transcribe in DaVinci Resolve (or reuse the clip's existing transcription)
   2. Ask OpenAI (with web search) to name unlabeled speakers ("Speaker 1517")
   3. Confirm each name, then write the names back into Resolve
-  4. Export the Resolve-format transcript to a work directory
+  4. Export the Resolve-format transcript
   5. Reformat it with transcript_reformatter to the final location
+
+Scratch files go in a temporary directory that is removed at the end. Two
+working files are kept next to the audio file (unless --no-sidecars):
+
+  <episode>.resolve.txt    Resolve-format transcript with timecodes and speakers
+  <episode>.speakers.json  speaker identification notes: suggestions, evidence,
+                           what was accepted, and whether the Resolve write worked
+
+A rerun reuses the decisions in <episode>.speakers.json instead of calling
+OpenAI again (--redo-speakers to ignore them).
 
 Each piece still runs on its own: resolve_transcribe.py, speaker_id.py and
 transcript_reformatter.py. This script only wires them together.
@@ -17,17 +27,25 @@ import os
 import argparse
 import configparser
 import copy
+import json
 import logging
+import shutil
+import tempfile
+import time
 
 import transcript_reformatter as rf
+import speaker_id
 from transcript_reformatter import write_out, write_status, log_fatal, log_warning, log_error, log_info, log_debug
 
 DEFAULT_TIME_FORMAT = rf.DEFAULT_TIME_FORMAT
 LOGGING_FORMAT = rf.LOGGING_FORMAT
 
 DEFAULT_RESOLVE_TRANSCRIBE_DIR = "~/dev/resolve_transcribe"
-DEFAULT_WORK_DIR = "~/Downloads/tmp/s"
 DEFAULT_MIN_CONFIDENCE = 0.8
+
+SIDECAR_TRANSCRIPT = 'resolve.txt'
+SIDECAR_SPEAKERS = 'speakers.json'
+SPEAKERS_VERSION = 1
 
 
 def main():
@@ -42,7 +60,13 @@ def main():
     parser.add_argument('-c', '--config', default=None, help="Configuration file path")
     parser.add_argument('-f', '--force', action='store_true', help="Overwrite the final transcript if it exists")
     parser.add_argument('--work-dir', default=None,
-                        help=f"Where the intermediate Resolve-format transcript goes (default: config or {DEFAULT_WORK_DIR})")
+                        help="Use this directory for scratch files and keep it "
+                             "(default: a temporary directory, removed at the end)")
+    parser.add_argument('--keep-work', action='store_true',
+                        help="Keep the temporary scratch directory and print its path")
+    parser.add_argument('--no-sidecars', action='store_true',
+                        help=f"Don't save <episode>.{SIDECAR_TRANSCRIPT} and <episode>.{SIDECAR_SPEAKERS} "
+                             "next to the audio file")
 
     sid = parser.add_argument_group('speaker identification')
     sid.add_argument('-y', '--yes', action='store_true',
@@ -50,6 +74,8 @@ def main():
     sid.add_argument('--min-confidence', type=float, default=None,
                      help=f"Confidence needed to auto-accept with --yes (default: config or {DEFAULT_MIN_CONFIDENCE})")
     sid.add_argument('--skip-speaker-id', action='store_true', help="Don't run AI speaker identification")
+    sid.add_argument('--redo-speakers', action='store_true',
+                     help=f"Ignore decisions saved in <episode>.{SIDECAR_SPEAKERS} and identify speakers again")
     sid.add_argument('--no-apply', action='store_true',
                      help="Use accepted names in the exported transcript only; don't write them to Resolve")
 
@@ -83,7 +109,6 @@ def main():
     if not os.path.isfile(audio_file):
         log_fatal(f"Audio file not found: {audio_file}")
 
-    base_name = os.path.splitext(os.path.basename(audio_file))[0]
     output_file = os.path.abspath(os.path.expanduser(args.output)) if args.output \
         else os.path.splitext(audio_file)[0] + '.txt'
     if os.path.exists(output_file) and not args.force:
@@ -95,11 +120,37 @@ def main():
         log_fatal("API key not found in configuration file")
     pipeline = load_pipeline_config(config_file)
 
-    work_dir = os.path.expanduser(args.work_dir or pipeline['work_dir'])
-    os.makedirs(work_dir, exist_ok=True)
-    min_confidence = args.min_confidence if args.min_confidence is not None else pipeline['min_confidence']
+    sidecars = pipeline['sidecars'] and not args.no_sidecars
+    if sidecars and not os.access(os.path.dirname(audio_file), os.W_OK):
+        log_fatal(f"Can't write sidecar files next to the audio in {os.path.dirname(audio_file)} "
+                  "(use --no-sidecars to skip them)")
 
+    min_confidence = args.min_confidence if args.min_confidence is not None else pipeline['min_confidence']
     rt = import_resolve_transcribe(pipeline['resolve_transcribe_dir'])
+
+    if args.work_dir:
+        work_dir = os.path.abspath(os.path.expanduser(args.work_dir))
+        os.makedirs(work_dir, exist_ok=True)
+        keep = {'work_dir': True}
+    else:
+        work_dir = tempfile.mkdtemp(prefix='podcast_transcribe-')
+        keep = {'work_dir': args.keep_work}
+    log_debug(f"Work directory: {work_dir}")
+
+    try:
+        return run(args, audio_file, output_file, openai_config, pipeline, rt,
+                   work_dir, keep, sidecars, min_confidence)
+    finally:
+        if keep['work_dir']:
+            write_out(f"Work files kept in: {work_dir}")
+        else:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def run(args, audio_file, output_file, openai_config, pipeline, rt, work_dir, keep, sidecars, min_confidence):
+    base_name = os.path.splitext(os.path.basename(audio_file))[0]
+    speakers_file = speaker_id.sidecar_path(audio_file, SIDECAR_SPEAKERS)
+    transcript_sidecar = speaker_id.sidecar_path(audio_file, SIDECAR_TRANSCRIPT)
 
     ######################################
     # 1. Transcribe (or reuse) in Resolve
@@ -129,17 +180,26 @@ def main():
     ######################################
     mapping = {}
     still_unlabeled = []
+    notes = None
     resolve_write_failed = False
     if not args.skip_speaker_id:
-        mapping, still_unlabeled = identify_and_confirm(
+        previous = None
+        if sidecars and not args.redo_speakers:
+            previous = load_speaker_notes(speakers_file)
+        mapping, still_unlabeled, notes = identify_and_confirm(
             transcription, audio_file, openai_config, pipeline, rt,
-            auto_yes=args.yes, min_confidence=min_confidence
+            auto_yes=args.yes, min_confidence=min_confidence, previous=previous
         )
+        # Save the decisions before touching Resolve, so they survive a failure there
+        if sidecars and notes:
+            notes['resolve_write'] = 'pending' if mapping and not args.no_apply else 'not attempted'
+            save_speaker_notes(speakers_file, notes)
 
     if mapping:
         if args.no_apply:
             log_info("--no-apply: renaming speakers in the exported transcript only")
             transcription = apply_mapping(transcription, mapping)
+            resolve_write = 'skipped (--no-apply)'
         else:
             write_status("Writing speaker names to Resolve...")
             backup = os.path.join(work_dir, f"{base_name}.transcription-backup.json")
@@ -147,13 +207,19 @@ def main():
             if error:
                 # Keep the confirmed names: apply them to the export instead
                 resolve_write_failed = True
+                keep['work_dir'] = True  # holds the backup of the original transcription
+                resolve_write = f"failed: {error}"
                 log_warning(f"Failed to write speaker names to Resolve: {error}")
                 log_warning("Applying the names to the exported transcript only; rename them in the "
                             "Resolve UI if you want Resolve to learn these voices")
                 transcription = apply_mapping(transcription, mapping)
             else:
-                write_out(f"Renamed {changed} segments in Resolve (original saved to {backup})")
+                resolve_write = 'ok'
+                write_out(f"Renamed {changed} segments in Resolve")
                 transcription = rt.get_transcription(item)
+        if sidecars and notes:
+            notes['resolve_write'] = resolve_write
+            save_speaker_notes(speakers_file, notes)
 
     ######################################
     # 4. Export the Resolve-format transcript
@@ -161,7 +227,13 @@ def main():
     intermediate = rt.export_transcription(project, item, transcription, audio_file, work_dir, base_name, 'txt')
     if not intermediate:
         log_fatal("Failed to export the Resolve transcript")
-    write_out(f"Resolve transcript: {intermediate}")
+    if sidecars:
+        # Saved before reformatting so a reformat failure doesn't lose it
+        with open(intermediate, 'r', encoding='utf-8') as f:
+            write_atomic(transcript_sidecar, f.read())
+        write_out(f"Resolve transcript: {transcript_sidecar}")
+    else:
+        write_out(f"Resolve transcript: {intermediate}")
 
     ######################################
     # 5. Reformat to the final location
@@ -182,6 +254,8 @@ def main():
     ######################################
     write_out("")
     write_out(f"Done: {output_file}")
+    if sidecars and notes:
+        write_out(f"Speaker notes: {speakers_file}")
     if resolve_write_failed:
         write_out("  Names applied to the transcript only (Resolve write failed)")
     for old, new in mapping.items():
@@ -191,17 +265,14 @@ def main():
     return 0
 
 
-def identify_and_confirm(transcription, audio_file, openai_config, pipeline, rt, auto_yes, min_confidence):
+def identify_and_confirm(transcription, audio_file, openai_config, pipeline, rt, auto_yes, min_confidence,
+                         previous=None):
     """
-    Find unlabeled speakers, ask OpenAI who they are, and confirm each name.
-    Returns: (mapping {label: name}, [labels left unlabeled])
+    Find unlabeled speakers, reuse decisions from a previous run where there are
+    any, ask OpenAI about the rest, and confirm each name.
+    Returns: (mapping {label: name}, [labels left unlabeled], notes dict or None)
+    notes is None when there was nothing to decide.
     """
-    try:
-        import speaker_id
-    except ImportError as e:
-        log_warning(f"speaker_id.py not available ({e}); skipping speaker identification")
-        return {}, []
-
     # Drop Resolve's '(...)' silence markers so the model sees clean text
     segments = []
     for seg in transcription.get('segments') or []:
@@ -213,14 +284,65 @@ def identify_and_confirm(transcription, audio_file, openai_config, pipeline, rt,
     unlabeled = speaker_id.find_unlabeled(segments)
     if not unlabeled:
         write_out("All speakers are labeled")
-        return {}, []
-
-    write_out(f"Unlabeled speakers: " + ', '.join(
-        f"{label or '(no speaker)'} ({len(idx)} segments)" for label, idx in unlabeled.items()))
+        return {}, [], None
 
     show_name, episode_title = speaker_id.episode_info(audio_file)
+    now = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    notes = {
+        'version': SPEAKERS_VERSION,
+        'created': now,
+        'updated': now,
+        'audio_file': os.path.basename(audio_file),
+        'show': show_name,
+        'episode_title': episode_title,
+        'model': None,
+        'min_confidence': min_confidence,
+        'speakers': {},
+        'resolve_write': None,
+    }
+
+    mapping = {}
+    still_unlabeled = []
+
+    # Reuse decisions from an earlier run (same clip, so the same Resolve labels)
+    prior = (previous or {}).get('speakers') or {}
+    reused = [label for label in unlabeled if speaker_id.label_key(label) in prior]
+    if reused:
+        notes['created'] = previous.get('created') or now
+        notes['model'] = previous.get('model')
+        write_out(f"Reusing earlier speaker decisions for: " + ', '.join(
+            speaker_id.label_key(label) for label in reused))
+        for label in reused:
+            entry = dict(prior[speaker_id.label_key(label)])
+            entry['segments'] = len(unlabeled[label])
+            notes['speakers'][speaker_id.label_key(label)] = entry
+            if entry.get('name') and entry['name'] != label:
+                mapping[label] = entry['name']
+            else:
+                still_unlabeled.append(label)
+
+    todo = {label: idx for label, idx in unlabeled.items() if label not in reused}
+    if not todo:
+        return mapping, still_unlabeled, notes
+
+    write_out(f"Unlabeled speakers: " + ', '.join(
+        f"{speaker_id.label_key(label)} ({len(idx)} segments)" for label, idx in todo.items()))
+
+    interactive = not auto_yes and sys.stdin.isatty()
+    if not auto_yes and not interactive:
+        log_warning("stdin is not a terminal and --yes was not given; leaving speakers unlabeled")
+        return mapping, still_unlabeled + list(todo), (notes if notes['speakers'] else None)
+
+    # Reused names count as named speakers, so the model only sees what's left
+    if mapping:
+        for seg in segments:
+            label = speaker_id.normalize_label(seg.get('speaker'))
+            if label in mapping:
+                seg['speaker'] = mapping[label]
+
     model = pipeline['speaker_id_model'] or speaker_id.DEFAULT_MODEL
-    write_status(f"Asking {model} to identify {len(unlabeled)} speaker(s)...")
+    notes['model'] = model
+    write_status(f"Asking {model} to identify {len(todo)} speaker(s)...")
     try:
         suggestions = speaker_id.identify_speakers(
             segments, show_name, episode_title, openai_config['api_key'], model)
@@ -228,37 +350,44 @@ def identify_and_confirm(transcription, audio_file, openai_config, pipeline, rt,
         log_error(f"Speaker identification failed: {e}")
         suggestions = {}
 
-    interactive = not auto_yes and sys.stdin.isatty()
-    if not auto_yes and not interactive:
-        log_warning("stdin is not a terminal and --yes was not given; leaving speakers unlabeled")
-        return {}, list(unlabeled)
-
-    mapping = {}
-    still_unlabeled = []
     # Most-heard speakers first
-    for label, indices in sorted(unlabeled.items(), key=lambda kv: -len(kv[1])):
+    for label, indices in sorted(todo.items(), key=lambda kv: -len(kv[1])):
         suggestion = suggestions.get(label) or {}
-        name = suggestion.get('name')
+        suggested = suggestion.get('name')
         confidence = float(suggestion.get('confidence') or 0.0)
+        evidence = suggestion.get('evidence')
 
         if interactive:
-            name = prompt_for_name(label, indices, segments, name, confidence,
-                                   suggestion.get('evidence'), min_confidence)
-        elif not name or confidence < min_confidence:
-            log_info(f"{label or '(no speaker)'}: not auto-accepted "
-                     f"({name or 'no suggestion'}, confidence {confidence:.2f})")
-            name = None
+            name, decision = prompt_for_name(label, indices, segments, suggested, confidence,
+                                             evidence, min_confidence)
+        elif suggested and confidence >= min_confidence:
+            name, decision = suggested, 'auto-accepted'
+        else:
+            log_info(f"{speaker_id.label_key(label)}: not auto-accepted "
+                     f"({suggested or 'no suggestion'}, confidence {confidence:.2f})")
+            name, decision = None, 'auto-skipped'
 
+        notes['speakers'][speaker_id.label_key(label)] = {
+            'segments': len(indices),
+            'suggestion': suggested,
+            'confidence': confidence,
+            'evidence': evidence or None,
+            'name': name if name and name != label else None,
+            'decision': decision,
+        }
         if name and name != label:
             mapping[label] = name
         else:
             still_unlabeled.append(label)
 
-    return mapping, still_unlabeled
+    return mapping, still_unlabeled, notes
 
 
 def prompt_for_name(label, indices, segments, name, confidence, evidence, min_confidence):
-    """Show a suggestion and ask the user to accept, edit or skip it. Returns the name or None."""
+    """
+    Show a suggestion and ask the user to accept, edit or skip it.
+    Returns (name or None, decision) where decision is 'accepted', 'edited' or 'skipped'.
+    """
     print("", file=sys.stderr)
     print(f"{label or '(no speaker)'}  ({len(indices)} segments)", file=sys.stderr)
     if name:
@@ -277,17 +406,17 @@ def prompt_for_name(label, indices, segments, name, confidence, evidence, min_co
         try:
             answer = input(f"  {choices} (default {default}): ").strip().lower() or default
         except EOFError:
-            return None
+            return None, 'skipped'
         if answer.startswith('a') and name:
-            return name
+            return name, 'accepted'
         if answer.startswith('s'):
-            return None
+            return None, 'skipped'
         if answer.startswith('e'):
             try:
                 edited = input("  Name: ").strip()
             except EOFError:
-                return None
-            return edited or None
+                return None, 'skipped'
+            return (edited, 'edited') if edited else (None, 'skipped')
 
 
 def apply_mapping(transcription, mapping):
@@ -299,6 +428,55 @@ def apply_mapping(transcription, mapping):
             seg['speaker'] = mapping[old]
     return result
 
+
+##############################################################################
+# Sidecar files
+##############################################################################
+
+def write_atomic(path, text):
+    """Write text to path via a hidden temp file in the same directory, then rename"""
+    directory, name = os.path.split(path)
+    tmp = os.path.join(directory, f".{name}.tmp")
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def load_speaker_notes(path):
+    """Speaker notes from an earlier run, or None if missing or unreadable"""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            notes = json.load(f)
+    except (OSError, ValueError) as e:
+        log_warning(f"Ignoring unreadable speaker notes {path}: {e}")
+        return None
+    if not isinstance(notes, dict) or not isinstance(notes.get('speakers'), dict):
+        log_warning(f"Ignoring speaker notes in an unexpected format: {path}")
+        return None
+    log_info(f"Loaded speaker notes: {path}")
+    return notes
+
+
+def save_speaker_notes(path, notes):
+    notes['updated'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    try:
+        write_atomic(path, json.dumps(notes, indent=2, ensure_ascii=False) + '\n')
+    except OSError as e:
+        log_warning(f"Could not save speaker notes to {path}: {e}")
+
+
+##############################################################################
+# Config
+##############################################################################
 
 def find_config_file(config_path=None):
     """Locate transcript_reformatter.conf the same way transcript_reformatter does"""
@@ -319,9 +497,9 @@ def load_pipeline_config(config_file):
     parser.read(config_file)
     return {
         'resolve_transcribe_dir': parser.get('pipeline', 'resolve_transcribe_dir', fallback=DEFAULT_RESOLVE_TRANSCRIBE_DIR),
-        'work_dir': parser.get('pipeline', 'work_dir', fallback=DEFAULT_WORK_DIR),
         'speaker_id_model': parser.get('pipeline', 'speaker_id_model', fallback=None),
         'min_confidence': parser.getfloat('pipeline', 'min_confidence', fallback=DEFAULT_MIN_CONFIDENCE),
+        'sidecars': parser.getboolean('pipeline', 'sidecars', fallback=True),
     }
 
 

@@ -26,8 +26,8 @@ max_continuations = 10
 # Where resolve_transcribe.py lives (default: ~/dev/resolve_transcribe)
 resolve_transcribe_dir = ~/dev/resolve_transcribe
 
-# Where the intermediate Resolve-format transcript is written (default: ~/Downloads/tmp/s)
-work_dir = ~/Downloads/tmp/s
+# Save <episode>.resolve.txt and <episode>.speakers.json next to the audio file (default: true)
+sidecars = true
 
 # Model used to identify unlabeled speakers; must support web search in the
 # OpenAI Responses API (default: speaker_id.DEFAULT_MODEL)

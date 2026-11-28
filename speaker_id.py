@@ -224,6 +224,25 @@ def episode_info(path):
     return show_name, title
 
 
+def sidecar_path(audio_path, tag):
+    """
+    Path of a pipeline sidecar next to the audio: '<base>.<tag>', e.g.
+    sidecar_path('Show/Ep.mp3', 'resolve.txt') -> 'Show/Ep.resolve.txt'.
+    The dotted tag keeps it out of loaders that pair '<base>.txt' with '<base>.<audio ext>'.
+    """
+    return os.path.splitext(os.path.abspath(audio_path))[0] + '.' + tag
+
+
+def label_key(label):
+    """JSON key for a speaker label (None becomes NO_SPEAKER_LABEL)"""
+    return label or NO_SPEAKER_LABEL
+
+
+def label_from_key(key):
+    """Inverse of label_key"""
+    return None if key == NO_SPEAKER_LABEL else key
+
+
 def truncate(text, limit):
     text = (text or '').strip()
     return text if len(text) <= limit else text[:limit].rstrip() + '...'

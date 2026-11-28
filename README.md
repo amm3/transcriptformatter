@@ -30,8 +30,8 @@ It runs these steps:
 1. **Transcribe** the audio in DaVinci Resolve using [`resolve_transcribe.py`](https://github.com/amm3/resolve_transcribe). If the clip is already in the Resolve project and transcribed, it reuses that transcription.
 2. **Identify unlabeled speakers** (segments labeled `Speaker 1517` or with no speaker) using `speaker_id.py`. It sends the show name, the episode title and excerpts to OpenAI, with web search enabled.
 3. **Confirm** each suggested name: accept, edit or skip it. With `--yes`, it accepts suggestions at or above `--min-confidence` without asking.
-4. **Write the names back to Resolve** with `MediaPoolItem.SetTranscription()` (Resolve Studio 21.1.2+). Resolve enrolls new names in the project. The original transcription is saved as JSON in the work dir first.
-5. **Export** the Resolve-format transcript to the work dir (default `~/Downloads/tmp/s`).
+4. **Write the names back to Resolve** with `MediaPoolItem.SetTranscription()` (Resolve Studio 21.1.2+). Resolve enrolls new names in the project. The original transcription is backed up to the scratch directory first; if the write fails, that directory is kept and its path printed.
+5. **Export** the Resolve-format transcript and save it next to the audio as `<episode>.resolve.txt` (see below).
 6. **Reformat** it with `transcript_reformatter.py`. The output goes next to the audio file with a `.txt` extension, or to the path given with `-o`.
 
 If the output file already exists, the pipeline stops before touching Resolve or the API unless you pass `-f`.
@@ -45,7 +45,26 @@ Useful options:
 ./podcast_transcribe.py --timestamps -o out.txt episode.mp3
 ```
 
-The pipeline reads the same `transcript_reformatter.conf`, plus an optional `[pipeline]` section. See `transcript_reformatter.conf.example` for `resolve_transcribe_dir`, `work_dir`, `speaker_id_model` and `min_confidence`.
+### Files kept next to the episode
+
+Unless you pass `--no-sidecars` (or set `sidecars = false` under `[pipeline]`), two working files are saved next to the audio file, wherever `-o` sends the final transcript:
+
+| File | Contents |
+| --- | --- |
+| `<episode>.resolve.txt` | The full Resolve-format transcript: timecodes, speaker names, segment text. Saved before reformatting, so it survives a reformat failure. |
+| `<episode>.speakers.json` | Speaker identification notes: for each unlabeled label, the AI suggestion, confidence, evidence, the final name and how it was decided (`accepted`, `edited`, `skipped`, `auto-accepted`, `auto-skipped`), plus the model and whether the Resolve write worked (`resolve_write`). |
+
+They're written atomically (a hidden `.<name>.tmp` file renamed into place), and they're replaced on each run without needing `-f`; `-f` only guards the final transcript.
+
+On a rerun, labels already decided in `<episode>.speakers.json` reuse those decisions instead of calling OpenAI again (useful after a failed reformat, or when the Resolve write failed so the labels are still `Speaker 1517`). Pass `--redo-speakers` to ask again.
+
+The `<episode>.<tag>.<ext>` naming keeps these out of the qdrant-rag podcast loader, which only indexes `<episode>.txt` when `<episode>.<audio ext>` sits next to it.
+
+### Scratch files
+
+Everything else (the export before it's copied, the transcription backup) goes in a fresh temporary directory that is removed when the run ends. `--keep-work` keeps it and prints its path; `--work-dir PATH` uses a fixed directory and never deletes it. The directory is also kept automatically when the Resolve speaker write fails, since it holds the backup of the original transcription.
+
+The pipeline reads the same `transcript_reformatter.conf`, plus an optional `[pipeline]` section. See `transcript_reformatter.conf.example` for `resolve_transcribe_dir`, `speaker_id_model`, `min_confidence` and `sidecars`.
 
 Each piece still runs on its own:
 
